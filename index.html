@@ -1,1522 +1,208 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Confidence AI</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,340;0,9..144,440;0,9..144,560;1,9..144,440&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-<style>
-:root{
-  --ink:#1B2624;
-  --ink-soft:#243330;
-  --paper:#F5F0E2;
-  --paper-dim:#E9E1CB;
-  --line:#3A4844;
-  --line-soft:#4C5C57;
-  --card-line:#C9BF9E;
-  --amber:#DC9A34;
-  --amber-dark:#8A5A16;
-  --teal:#3E8C79;
-  --teal-dark:#1F4A40;
-  --rust:#B34A36;
-  --rust-dark:#6E2A1D;
-  --muted:#736A55;
-  --stone:#7A7360;
-}
-*{box-sizing:border-box; margin:0; padding:0;}
-html{scroll-behavior:smooth;}
-body{
-  background:var(--ink);
-  color:var(--paper);
-  font-family:'Source Serif 4', Georgia, serif;
-  -webkit-font-smoothing:antialiased;
-}
-a{color:inherit;}
-button{cursor:pointer;}
-.wrap{max-width:960px; margin:0 auto; padding:0 28px;}
-.app-wrap{max-width:660px; margin:0 auto; padding:48px 28px 80px;}
+// supabase/functions/generate-questions/index.ts
+//
+// Deploy with:
+//   supabase functions deploy generate-questions
+//
+// Expects the frontend to POST:
+//   {
+//     source: string,        // notes or a topic, e.g. "the French Revolution" (max 4000 chars, longer is truncated)
+//     count: number,         // how many questions to generate (1–10, capped server-side to limit credit use)
+//     images: string[]       // optional array of data URLs (max 2 kept, extras are dropped)
+//   }
+//
+// Requires a logged-in Supabase user — the request must include
+// "Authorization: Bearer <user access token>" (the frontend already does this).
+//
+// The OpenRouter API key is NOT sent by the client. It's read from a
+// server-side secret, set once with:
+//   supabase secrets set OPENROUTER_API_KEY=sk-or-v1-...
+// This means visitors never see the key, but all usage bills to your account.
+//
+// Optionally set OPENROUTER_MODEL to pick a different model. Defaults to
+// Claude Haiku via OpenRouter, which is much cheaper per token than Sonnet/Opus
+// while still handling this task well. Vision-capable models are required if
+// you want image attachments to work.
+//
+// Returns:
+//   { questions: [ { question: string, options: string[], correctIndex: number }, ... ] }
 
-/* ---------- nav / wordmark ---------- */
-nav{
-  display:flex; align-items:center; justify-content:space-between;
-  padding:30px 0;
-}
-.mark{display:flex; align-items:center; gap:10px; cursor:pointer; background:none; border:none;}
-.mark-quad{
-  width:16px; height:16px;
-  display:grid; grid-template-columns:1fr 1fr; grid-template-rows:1fr 1fr; gap:2px;
-}
-.mark-quad span{border-radius:1px; background:#4C5C57;}
-.mark-quad span:nth-child(3){background:var(--amber);}
-.mark-word{
-  font-family:'IBM Plex Mono', monospace;
-  font-size:12.5px;
-  letter-spacing:0.16em;
-  text-transform:uppercase;
-  color:var(--paper);
-}
-.nav-right{display:flex; align-items:center; gap:12px;}
-.nav-cta{
-  font-family:'IBM Plex Mono', monospace;
-  font-size:12.5px;
-  letter-spacing:0.03em;
-  border:1px solid var(--line-soft);
-  background:none;
-  color:var(--paper);
-  padding:10px 18px;
-  border-radius:2px;
-  text-decoration:none;
-  transition:border-color 0.15s ease, color 0.15s ease;
-}
-.nav-cta:hover{border-color:var(--amber); color:var(--amber);}
-.nav-cta.ghost-link{border-color:transparent;}
-.nav-cta.ghost-link:hover{border-color:var(--amber);}
-.nav-user{
-  display:flex; align-items:center; gap:12px;
-  font-family:'IBM Plex Mono', monospace; font-size:12px; color:var(--stone);
-}
-.nav-user .nav-email{color:var(--paper); max-width:150px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-/* ---------- hero ---------- */
-header.hero{
-  padding:56px 0 90px;
-  display:grid;
-  grid-template-columns:1.15fr 0.85fr;
-  gap:60px;
-  align-items:center;
-}
-.eyebrow{
-  font-family:'IBM Plex Mono', monospace;
-  font-size:12px;
-  letter-spacing:0.16em;
-  text-transform:uppercase;
-  color:var(--amber);
-  margin-bottom:20px;
-}
-h1{
-  font-family:'Fraunces', Georgia, serif;
-  font-optical-sizing:auto;
-  font-weight:440;
-  font-size:56px;
-  line-height:1.06;
-  letter-spacing:-0.01em;
-  margin-bottom:24px;
-}
-h1 em{ font-style:italic; font-weight:440; color:var(--amber); }
-.lede{
-  font-size:18px;
-  line-height:1.65;
-  color:#CFC8B2;
-  max-width:44ch;
-  margin-bottom:36px;
-}
-.cta-row{display:flex; gap:22px; align-items:center; flex-wrap:wrap;}
-.btn{
-  font-family:'IBM Plex Mono', monospace;
-  font-size:13px;
-  letter-spacing:0.03em;
-  padding:15px 26px;
-  border-radius:2px;
-  border:none;
-  display:inline-block;
-  text-decoration:none;
-  transition:background 0.15s ease, color 0.15s ease;
-}
-.btn.primary{background:var(--amber); color:#2A1B05;}
-.btn.primary:hover{background:#C4831F;}
-.btn.secondary{
-  background:none;
-  color:var(--paper);
-  border-bottom:1px solid var(--line-soft);
-  padding:15px 0;
-  border-radius:0;
-}
-.btn.secondary:hover{color:var(--amber); border-color:var(--amber);}
+const OPENROUTER_MODEL = Deno.env.get("OPENROUTER_MODEL") || "anthropic/claude-3.5-haiku";
+const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
 
-.quad-card{ background:var(--paper); border-radius:4px; padding:26px 26px 20px; }
-.quad-label{
-  font-family:'IBM Plex Mono', monospace;
-  font-size:10.5px;
-  text-transform:uppercase;
-  letter-spacing:0.1em;
-  color:#8A8266;
-  text-align:center;
-  margin-bottom:14px;
-}
-.quad-grid{
-  display:grid; grid-template-columns:1fr 1fr; grid-template-rows:1fr 1fr;
-  gap:5px; aspect-ratio:1/1;
-}
-.q{ border-radius:3px; padding:16px; display:flex; flex-direction:column; justify-content:flex-end; color:var(--ink); }
-.q .qn{ font-family:'Fraunces', Georgia, serif; font-weight:500; font-size:16px; margin-bottom:3px; }
-.q .qd{ font-family:'IBM Plex Mono', monospace; font-size:10px; letter-spacing:0.02em; opacity:0.75; }
-.q.blind{background:#F1D6A0; outline:1.5px solid var(--amber-dark);}
-.q.locked{background:#CBE4D9;}
-.q.underselling{background:#DAE5D2;}
-.q.fair{background:#E9D7D0;}
-.axis-x{
-  font-family:'IBM Plex Mono', monospace; font-size:10.5px; color:#8A8266;
-  display:flex; justify-content:space-between; margin-top:10px; letter-spacing:0.02em;
-}
-
-/* ---------- sections ---------- */
-section{padding:64px 0;}
-.rule{border-top:1px solid var(--line);}
-.section-head{display:flex; align-items:baseline; gap:18px; margin-bottom:40px;}
-.section-head .eyebrow{margin:0;}
-h2{ font-family:'Fraunces', Georgia, serif; font-weight:440; font-size:30px; letter-spacing:-0.005em; }
-
-.steps{display:grid; grid-template-columns:repeat(3,1fr); gap:30px;}
-.step{padding:24px 0 0; border-top:1px solid var(--line);}
-.step .n{ font-family:'IBM Plex Mono', monospace; font-size:12px; color:var(--amber); margin-bottom:14px; }
-.step h3{ font-family:'Fraunces', Georgia, serif; font-weight:500; font-size:19px; margin-bottom:10px; }
-.step p{ font-size:15px; line-height:1.65; color:#CFC8B2; }
-
-.callout{ background:var(--ink-soft); border-left:2px solid var(--amber); padding:30px 32px; border-radius:0 4px 4px 0; }
-.callout p{ font-family:'Fraunces', Georgia, serif; font-weight:400; font-style:italic; font-size:19px; line-height:1.6; color:#E4DFCB; }
-.callout p + p{margin-top:16px;}
-
-footer{
-  padding:40px 0 56px; font-family:'IBM Plex Mono', monospace; font-size:11.5px;
-  letter-spacing:0.02em; color:var(--stone); display:flex; justify-content:space-between;
-}
-
-@media (max-width:720px){
-  .wrap{padding:0 20px;}
-  header.hero{grid-template-columns:1fr; padding-top:36px; gap:40px;}
-  h1{font-size:34px;}
-  .lede{font-size:16.5px;}
-  .steps{grid-template-columns:1fr; gap:26px;}
-  .section-head{flex-direction:column; align-items:flex-start; gap:6px;}
-  h2{font-size:25px;}
-  footer{flex-direction:column; gap:6px;}
-  .callout{padding:24px 22px;}
-  .callout p{font-size:17px;}
-}
-@media (max-width:480px){
-  h1{font-size:28px;}
-  .btn{font-size:12.5px; padding:14px 20px;}
-  .nav-cta{font-size:11.5px; padding:9px 14px;}
-  .mark-word{font-size:11px;}
-  .nav-user .nav-email{max-width:80px;}
-}
-
-/* ---------- splash ---------- */
-#splash{
-  position:fixed; inset:0; background:var(--ink);
-  display:flex; flex-direction:column; align-items:center; justify-content:center;
-  z-index:100; transition:opacity 0.5s ease, visibility 0.5s ease;
-}
-#splash.hide{ opacity:0; visibility:hidden; }
-.splash-mark{ display:flex; align-items:center; gap:14px; }
-.splash-quad{
-  width:36px; height:36px; display:grid;
-  grid-template-columns:1fr 1fr; grid-template-rows:1fr 1fr; gap:3px;
-}
-.splash-quad span{ border-radius:2px; background:var(--line-soft); opacity:0; animation:pip 1.6s ease-in-out infinite; }
-.splash-quad span:nth-child(1){animation-delay:0s; background:#DAE5D2;}
-.splash-quad span:nth-child(2){animation-delay:0.15s; background:#CBE4D9;}
-.splash-quad span:nth-child(3){animation-delay:0.3s; background:var(--amber);}
-.splash-quad span:nth-child(4){animation-delay:0.45s; background:#E9D7D0;}
-@keyframes pip{ 0%{opacity:0.25;} 40%{opacity:1;} 100%{opacity:0.25;} }
-.splash-word{
-  font-family:'IBM Plex Mono', monospace; font-size:14px; letter-spacing:0.18em;
-  text-transform:uppercase; color:var(--paper);
-}
-.splash-tag{ font-family:'IBM Plex Mono', monospace; font-size:12px; color:var(--stone); margin-top:18px; letter-spacing:0.03em; }
-
-/* ---------- app screens (setup / quiz / results / auth) ---------- */
-.card{
-  background:var(--paper); color:var(--ink); border-radius:6px; padding:32px 34px; margin-bottom:22px;
-}
-.app-wrap h1{ font-size:34px; margin-bottom:8px; }
-.app-sub{ color:#CFC8B2; font-size:15.5px; line-height:1.6; margin-bottom:34px; max-width:52ch; }
-label{
-  display:block; font-family:'IBM Plex Mono', monospace; font-size:11px; text-transform:uppercase;
-  letter-spacing:0.08em; color:var(--muted); margin-bottom:10px;
-}
-textarea, input[type=text], input[type=email], input[type=password]{
-  width:100%; font-family:'Source Serif 4', Georgia, serif; font-size:15.5px; padding:14px;
-  border:1px solid var(--card-line); border-radius:3px; background:#fff; color:var(--ink); resize:vertical;
-}
-textarea{min-height:130px; line-height:1.55;}
-.row{display:flex; gap:16px; margin-top:20px;}
-.row > div{flex:1;}
-select{
-  width:100%; font-family:'Source Serif 4', Georgia, serif; font-size:15px; padding:12px;
-  border:1px solid var(--card-line); border-radius:3px; background:#fff; color:var(--ink);
-}
-.card button{
-  font-family:'IBM Plex Mono', monospace; letter-spacing:0.03em; font-size:13px; padding:14px 24px;
-  border-radius:3px; border:none; background:var(--amber); color:#2A1B05; transition:background 0.15s ease;
-}
-.card button:hover{background:#C4831F;}
-.card button:disabled{opacity:0.4; cursor:default;}
-.card button.ghost{ background:transparent; border:1px solid var(--ink); color:var(--ink); }
-.card button.ghost:hover{background:rgba(0,0,0,0.06);}
-.actions{margin-top:24px; display:flex; justify-content:flex-end; gap:10px;}
-.err{ color:var(--rust); font-size:14px; margin-top:16px; }
-.success-msg{ color:var(--teal-dark); font-size:14px; margin-top:16px; }
-
-/* ---------- auth forms ---------- */
-.auth-field{margin-bottom:18px;}
-.auth-field:last-of-type{margin-bottom:0;}
-.auth-switch{
-  margin-top:22px; font-size:14px; color:var(--muted); text-align:center;
-}
-.auth-switch button{
-  background:none; border:none; padding:0; color:var(--teal-dark); text-decoration:underline;
-  font-family:'Source Serif 4', Georgia, serif; font-size:14px; cursor:pointer;
-}
-.auth-submit-row{margin-top:26px; display:flex; justify-content:flex-end;}
-.auth-submit-row button{width:100%;}
-
-/* ---------- attachments (camera / scan) ---------- */
-.attach-row{display:flex; gap:12px; margin-top:16px; flex-wrap:wrap;}
-.attach-btn{
-  display:inline-flex; align-items:center; gap:8px; cursor:pointer;
-  font-family:'IBM Plex Mono', monospace; font-size:12.5px; letter-spacing:0.02em;
-  padding:11px 16px; border:1px solid var(--ink); border-radius:3px; color:var(--ink);
-  background:transparent; transition:background 0.15s ease;
-}
-.attach-btn:hover{background:rgba(0,0,0,0.06);}
-.attach-btn svg{width:15px; height:15px; flex-shrink:0;}
-.attach-hint{
-  font-family:'IBM Plex Mono', monospace; font-size:10.5px; color:var(--muted);
-  margin-top:10px; letter-spacing:0.02em;
-}
-.attach-previews{display:flex; flex-wrap:wrap; gap:10px; margin-top:16px;}
-.attach-thumb{
-  position:relative; width:76px; height:76px; border-radius:4px; overflow:hidden;
-  border:1px solid var(--card-line); background:#fff;
-}
-.attach-thumb img{width:100%; height:100%; object-fit:cover; display:block;}
-.attach-thumb.file{
-  display:flex; flex-direction:column; align-items:center; justify-content:center;
-  padding:6px; text-align:center; font-size:22px;
-}
-.attach-thumb.file .fname{
-  font-family:'IBM Plex Mono', monospace; font-size:9px; color:var(--muted);
-  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; width:100%; margin-top:4px;
-}
-.attach-remove{
-  position:absolute; top:3px; right:3px; width:19px; height:19px; border-radius:50%;
-  background:rgba(27,38,36,0.75); color:#fff; border:none; font-size:13px; line-height:1;
-  display:flex; align-items:center; justify-content:center; cursor:pointer; padding:0;
-}
-.attach-remove:hover{background:var(--rust);}
-
-.progress{ font-family:'IBM Plex Mono', monospace; font-size:12px; color:var(--stone); letter-spacing:0.06em; margin-bottom:16px; }
-.qtext{ font-family:'Fraunces', Georgia, serif; font-weight:440; font-size:23px; line-height:1.4; margin-bottom:24px; }
-.opt{
-  display:block; width:100%; text-align:left; background:#fff; border:1px solid var(--card-line); color:var(--ink);
-  font-family:'Source Serif 4', Georgia, serif; font-size:15px; padding:14px 16px; border-radius:3px;
-  margin-bottom:10px; cursor:pointer; transition:border-color 0.1s ease;
-}
-.opt:hover{border-color:var(--ink);}
-.opt.selected{ border-color:var(--amber-dark); background:#FBF0DC; box-shadow: inset 0 0 0 1px var(--amber-dark); }
-.opt.correct{ border-color:var(--teal-dark); background:#E4F0EB; box-shadow: inset 0 0 0 1px var(--teal-dark); }
-.opt.wrong{ border-color:var(--rust-dark); background:#F4E4E0; box-shadow: inset 0 0 0 1px var(--rust-dark); }
-.conf-scale{display:flex; gap:8px; margin-top:8px;}
-.conf-btn{
-  flex:1; padding:13px 0; text-align:center; background:#fff; border:1px solid var(--card-line); border-radius:3px;
-  font-family:'IBM Plex Mono', monospace; font-size:14px; color:var(--ink); cursor:pointer;
-  transition:background 0.1s ease, color 0.1s ease;
-}
-.conf-btn.selected{ background:var(--ink); color:var(--paper); border-color:var(--ink); }
-.conf-labels{
-  display:flex; justify-content:space-between; font-family:'IBM Plex Mono', monospace; font-size:10.5px;
-  color:var(--muted); margin-top:8px; letter-spacing:0.02em;
-}
-.verdict{ font-size:14.5px; margin-top:22px; padding:16px 18px; border-radius:3px; }
-.verdict > div:first-child{ font-family:'Fraunces', Georgia, serif; font-weight:500; font-size:16px; }
-.verdict.correct{background:#E4F0EB; color:var(--teal-dark); border:1px solid var(--teal-dark);}
-.verdict.wrong{background:#F4E4E0; color:var(--rust-dark); border:1px solid var(--rust-dark);}
-.verdict.blindspot{background:#FBEFD9; color:var(--amber-dark); border:1px solid var(--amber-dark);}
-.explain{margin-top:8px; font-weight:400; font-size:14.5px;}
-.loading{ display:flex; flex-direction:column; align-items:center; gap:22px; padding:52px 0; }
-.loading-text{ font-size:15px; color:var(--muted); text-align:center; }
-.loading-quad{
-  width:30px; height:30px; display:grid;
-  grid-template-columns:1fr 1fr; grid-template-rows:1fr 1fr; gap:3px;
-}
-.loading-quad span{ border-radius:2px; background:var(--card-line); opacity:0; animation:pip 1.6s ease-in-out infinite; }
-.loading-quad span:nth-child(1){animation-delay:0s; background:var(--teal);}
-.loading-quad span:nth-child(2){animation-delay:0.15s; background:var(--amber);}
-.loading-quad span:nth-child(3){animation-delay:0.3s; background:var(--rust);}
-.loading-quad span:nth-child(4){animation-delay:0.45s; background:var(--ink-soft);}
-.grid-wrap{position:relative;}
-#chart{width:100%; display:block;}
-.stat-row{display:flex; gap:14px; margin-bottom:24px;}
-.stat{ flex:1; background:var(--paper-dim); border-radius:4px; padding:16px 16px; text-align:center; }
-.stat .num{font-size:27px; font-family:'Fraunces', Georgia, serif; font-weight:500;}
-.stat .lbl{ font-family:'IBM Plex Mono', monospace; font-size:10.5px; text-transform:uppercase; letter-spacing:0.06em; color:var(--muted); margin-top:6px; }
-.flag-list{margin-top:24px;}
-.flag-item{
-  border-left:3px solid var(--amber-dark); padding:12px 15px; background:var(--paper-dim);
-  margin-bottom:9px; font-size:14px; border-radius:0 3px 3px 0;
-}
-.flag-item b{ display:block; margin-bottom:4px; font-family:'Fraunces', Georgia, serif; font-weight:500; font-size:15px; }
-
-/* ---------- history sidebar (left, dark) ---------- */
-#sidebar-toggle{
-  position:fixed; top:26px; left:24px; z-index:80;
-  width:38px; height:38px; display:flex; align-items:center; justify-content:center;
-  background:var(--ink-soft); border:1px solid var(--line-soft); border-radius:4px;
-  color:var(--paper); cursor:pointer;
-  transition:left 0.3s ease, border-color 0.15s ease, color 0.15s ease;
-}
-#sidebar-toggle:hover{border-color:var(--amber); color:var(--amber);}
-#sidebar-toggle svg{width:16px; height:16px;}
-
-#history-overlay{
-  position:fixed; inset:0; background:rgba(0,0,0,0.5);
-  opacity:0; visibility:hidden; transition:opacity 0.3s ease, visibility 0.3s ease;
-  z-index:65;
-}
-#history-overlay.open{ opacity:1; visibility:visible; }
-
-#history-panel{
-  position:fixed; top:0; left:0; bottom:0; width:272px;
-  background:#141C1A; color:var(--paper);
-  border-right:1px solid var(--line);
-  transform:translateX(-100%); transition:transform 0.3s ease;
-  z-index:70; overflow-y:auto; padding:76px 18px 24px;
-  display:flex; flex-direction:column;
-}
-#history-panel.open{ transform:translateX(0); }
-
-.hist-head{
-  font-family:'Fraunces', Georgia, serif; font-weight:500; font-size:17px;
-  margin-bottom:4px; color:var(--paper);
-}
-.hist-sub{
-  font-family:'IBM Plex Mono', monospace; font-size:10.5px; color:var(--stone);
-  text-transform:uppercase; letter-spacing:0.06em; margin-bottom:18px;
-}
-.hist-new{
-  display:block; width:100%; text-align:left; background:var(--amber); color:#2A1B05;
-  font-family:'IBM Plex Mono', monospace; font-size:12px; letter-spacing:0.03em;
-  padding:11px 13px; border:none; border-radius:3px; margin-bottom:18px; cursor:pointer;
-  transition:background 0.15s ease;
-}
-.hist-new:hover{background:#C4831F;}
-.hist-list{flex:1; overflow-y:auto;}
-.hist-empty{ font-size:13.5px; color:var(--stone); line-height:1.6; }
-.hist-item{
-  display:block; width:100%; text-align:left; background:none;
-  border:1px solid transparent; border-radius:4px; padding:11px 12px;
-  margin-bottom:4px; cursor:pointer; font-family:'Source Serif 4', Georgia, serif;
-  color:var(--paper); transition:background 0.12s ease, border-color 0.12s ease;
-}
-.hist-item:hover{background:var(--ink-soft); border-color:var(--line-soft);}
-.hist-item .h-topic{
-  font-family:'Fraunces', Georgia, serif; font-weight:500; font-size:14px;
-  margin-bottom:4px; line-height:1.3; color:var(--paper);
-}
-.hist-item .h-meta{
-  font-family:'IBM Plex Mono', monospace; font-size:10px; color:#9A9480;
-  display:flex; justify-content:space-between;
-}
-.hist-item .h-flag{ color:var(--amber); }
-.hist-clear{
-  margin-top:14px; width:100%; background:none; border:1px solid var(--line-soft);
-  color:var(--paper); font-family:'IBM Plex Mono', monospace; font-size:11px;
-  padding:10px; border-radius:3px; cursor:pointer;
-  transition:border-color 0.15s ease, color 0.15s ease;
-}
-.hist-clear:hover{ border-color:var(--rust); color:var(--rust); }
-
-#root{ opacity:0; transition:margin-left 0.3s ease, opacity 0.6s ease; }
-#root.ready{ opacity:1; }
-
-@media (min-width:901px){
-  #history-overlay{ display:none; }
-  body.sidebar-open #root{ margin-left:272px; }
-  #sidebar-toggle.shifted{ left:296px; }
-}
-@media (max-width:720px){
-  nav{ padding-left:50px; }
-  body.is-home nav{ padding-left:0; }
-
-  .app-wrap{ padding:76px 18px 60px; }
-  .app-wrap h1{ font-size:26px; }
-  .app-sub{ font-size:14.5px; }
-  .card{ padding:22px 20px; border-radius:5px; }
-  .row{ flex-direction:column; gap:14px; margin-top:16px; }
-  .attach-row{ flex-direction:column; }
-  .attach-btn{ justify-content:center; }
-  .attach-thumb{ width:64px; height:64px; }
-  .qtext{ font-size:19px; }
-  .conf-scale{ gap:6px; }
-  .conf-btn{ padding:11px 0; font-size:13px; }
-  .conf-labels{ font-size:9.5px; }
-  .opt{ padding:12px 14px; font-size:14.5px; }
-  .actions{ justify-content:stretch; }
-  .actions button{ flex:1; }
-  .stat-row{ gap:10px; }
-  .stat{ padding:12px 8px; }
-  .stat .num{ font-size:21px; }
-  .stat .lbl{ font-size:9.5px; letter-spacing:0.04em; }
-  .flag-item{ padding:11px 13px; font-size:13px; }
-  .verdict{ padding:14px 15px; font-size:14px; }
-
-  #history-panel{ width:82vw; padding:74px 16px 20px; }
-  #sidebar-toggle{ width:34px; height:34px; top:20px; left:18px; }
-  #sidebar-toggle.shifted{ left:calc(82vw + 14px); }
-}
-@media (max-width:400px){
-  .conf-scale{ flex-wrap:wrap; }
-  .conf-btn{ flex:1 1 30%; }
-}
-
-</style>
-</head>
-<body>
-<div id="splash">
-  <div class="splash-mark">
-    <div class="splash-quad"><span></span><span></span><span></span><span></span></div>
-    <div class="splash-word">Confidence AI</div>
-  </div>
-  <div class="splash-tag">Loading&hellip;</div>
-</div>
-
-<div id="root"></div>
-
-<button id="sidebar-toggle" aria-label="Toggle history">
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"></rect><line x1="9" y1="4" x2="9" y2="20"></line></svg>
-</button>
-<div id="history-overlay"></div>
-<div id="history-panel"></div>
-
-<!-- third-party libraries -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
-
-<!-- app code (bundled) -->
-<script>
-// ---------------- config ----------------
-// Replace with your own project's values (Settings > API in the Supabase dashboard).
-const SUPABASE_URL = "https://esltdwmzcpulytqcfmlx.supabase.co";
-const SUPABASE_ANON_KEY = "sb_publishable_0qXemKbL6Z9bX7Hoc__nYQ_dIt0Hgbv";
-
-// Shared Supabase client, used for both the edge function calls and auth
-// (relies on the supabase-js UMD build loaded in index.html before this file).
-const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-// ---------------- history (Supabase-backed) ----------------
-// Sessions are stored per-user in the `sessions` table (see README for the
-// SQL / RLS policies). Since generating a quiz already requires login, every
-// saved session is guaranteed to have a user attached.
-
-function mapRow(row){
-  return {
-    id: row.id,
-    topic: row.topic,
-    timestamp: new Date(row.created_at).getTime(),
-    total: row.total,
-    correctCount: row.correct_count,
-    blindspots: row.blindspots,
-    answers: row.answers
-  };
-}
-
-async function refreshHistory(){
-  if(!state.user){
-    state.history = [];
-    return;
-  }
-  state.historyLoading = true;
-  try{
-    const { data, error } = await supabaseClient
-      .from('sessions')
-      .select('id, topic, total, correct_count, blindspots, answers, created_at')
-      .order('created_at', { ascending: false });
-    if(error) throw error;
-    state.history = (data || []).map(mapRow);
-  }catch(e){
-    console.error('Failed to load history:', e.message);
-    state.history = [];
-  }
-  state.historyLoading = false;
-}
-
-async function saveSession(){
-  const total = state.answers.length;
-  const correctCount = state.answers.filter(a => a.correct).length;
-  const blindspots = state.answers.filter(a => !a.correct && a.confidence >= 4).length;
-  const topic = state.source.length > 48 ? state.source.slice(0,48) + '\u2026' : state.source;
-
-  try{
-    const { error } = await supabaseClient.from('sessions').insert({
-      user_id: state.user.id,
-      topic,
-      total,
-      correct_count: correctCount,
-      blindspots,
-      answers: state.answers
-    });
-    if(error) throw error;
-  }catch(e){
-    console.error('Failed to save session:', e.message);
-  }
-  await refreshHistory();
-}
-
-async function clearHistory(){
-  if(!state.user) return;
-  try{
-    const { error } = await supabaseClient.from('sessions').delete().eq('user_id', state.user.id);
-    if(error) throw error;
-  }catch(e){
-    console.error('Failed to clear history:', e.message);
-  }
-  await refreshHistory();
-  renderSidebar();
-}
-
-function getViewingSession(){
-  return state.history.find(h => h.id === state.viewingSessionId);
-}
-
-function renderSidebar(){
-  const toggle = document.getElementById('sidebar-toggle');
-  const overlay = document.getElementById('history-overlay');
-  const panel = document.getElementById('history-panel');
-  if(!toggle || !overlay || !panel) return;
-
-  const hideOnScreens = ['home', 'login', 'signup', 'forgot'];
-  const onHiddenScreen = hideOnScreens.includes(state.screen);
-  toggle.style.display = onHiddenScreen ? 'none' : 'flex';
-  if(onHiddenScreen){
-    overlay.classList.remove('open');
-    panel.classList.remove('open');
-    toggle.classList.remove('shifted');
-    document.body.classList.remove('sidebar-open');
-    return;
-  }
-
-  toggle.classList.toggle('shifted', state.sidebarOpen);
-  overlay.classList.toggle('open', state.sidebarOpen);
-  panel.classList.toggle('open', state.sidebarOpen);
-  document.body.classList.toggle('sidebar-open', state.sidebarOpen);
-
-  panel.innerHTML = `
-    <div class="hist-head">History</div>
-    <div class="hist-sub">${state.historyLoading ? 'Loading\u2026' : `${state.history.length} saved session${state.history.length===1?'':'s'}`}</div>
-    <button class="hist-new" id="hist-new-btn">+ New session</button>
-    <div class="hist-list">
-      ${state.historyLoading
-        ? `<div class="hist-empty">Loading your saved sessions\u2026</div>`
-        : state.history.length === 0
-          ? `<div class="hist-empty">Finish a quiz and it'll show up here, so you can revisit past blind spots.</div>`
-          : state.history.map(h => `
-            <button class="hist-item" data-session="${h.id}">
-              <div class="h-topic">${h.topic || 'Untitled session'}</div>
-              <div class="h-meta">
-                <span>${h.correctCount}/${h.total} correct</span>
-                <span class="${h.blindspots ? 'h-flag' : ''}">${h.blindspots} blind spot${h.blindspots===1?'':'s'}</span>
-              </div>
-            </button>
-          `).join('')
-      }
-    </div>
-    ${!state.historyLoading && state.history.length ? `<button class="hist-clear" id="clear-history-btn">Clear history</button>` : ''}
-  `;
-
-  toggle.onclick = () => { state.sidebarOpen = !state.sidebarOpen; renderSidebar(); };
-  overlay.onclick = () => { state.sidebarOpen = false; renderSidebar(); };
-
-  const newBtn = document.getElementById('hist-new-btn');
-  if(newBtn) newBtn.onclick = () => {
-    Object.assign(state, {
-      source:'', count:6, attachments:[], questions:[], current:0,
-      answers:[], selectedOpt:null, selectedConf:null, revealed:false, error:null,
-      sidebarOpen: window.innerWidth > 900
-    });
-    requireAuthThen('setup');
-    render();
-  };
-
-  panel.querySelectorAll('.hist-item').forEach(btn => {
-    btn.onclick = () => {
-      state.viewingSessionId = btn.dataset.session;
-      state.screen = 'session';
-      state.sidebarOpen = window.innerWidth > 900;
-      render();
-    };
-  });
-  const clearBtn = document.getElementById('clear-history-btn');
-  if(clearBtn) clearBtn.onclick = () => { clearHistory(); };
-}
-// ---------------- state ----------------
-const MAX_ATTACHMENTS = 6;
-
-const state = {
-  screen: 'home', // home | login | signup | forgot | update-password | setup | loading | quiz | results | session
-  user: null,          // set by auth.js once a session is known
-  authChecked: false,  // true once the initial session check has resolved
-  authError: null,
-  authLoading: false,
-  signupConfirmMessage: null,
-  resetSentMessage: null,
-  redirectAfterAuth: null, // screen to jump to once login/signup succeeds
-  source: '',
-  count: 6,
-  attachments: [],
-  questions: [],
-  current: 0,
-  answers: [],
-  selectedOpt: null,
-  selectedConf: null,
-  revealed: false,
-  error: null,
-  sidebarOpen: false,
-  history: [],           // loaded from Supabase once a user is known, see history.js
-  historyLoading: false,
-  viewingSessionId: null
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
-// ---------------- auth ----------------
-// Thin wrapper around Supabase Auth. Keeps state.user (and the per-user
-// history list) in sync, and re-renders whenever auth state changes
-// (login, logout, token refresh, password recovery).
 
-async function initAuth(){
-  const { data } = await supabaseClient.auth.getSession();
-  state.user = data.session ? data.session.user : null;
-  state.authChecked = true;
-  if(state.user) await refreshHistory();
-
-  supabaseClient.auth.onAuthStateChange(async (event, session) => {
-    if(event === 'PASSWORD_RECOVERY'){
-      // User followed the reset-password link from their email.
-      state.screen = 'update-password';
-      render();
-      return;
-    }
-    const nextUser = session ? session.user : null;
-    const userChanged = (nextUser && nextUser.id) !== (state.user && state.user.id);
-    state.user = nextUser;
-    if(userChanged) await refreshHistory();
-    render();
+function jsonResponse(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
 }
 
-async function signUp(email, password){
-  state.authLoading = true;
-  state.authError = null;
-  render();
-  try{
-    const { data, error } = await supabaseClient.auth.signUp({ email, password });
-    if(error) throw error;
-    state.authLoading = false;
-    if(!data.session){
-      // Email confirmation is on for this project — no session yet.
-      state.authError = null;
-      state.screen = 'login';
-      state.signupConfirmMessage = 'Check your inbox to confirm your email, then log in.';
-    } else {
-      state.user = data.session.user;
-      await refreshHistory();
-      goToPostAuthScreen();
+Deno.serve(async (req: Request) => {
+  // Handle CORS preflight
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
+  }
+
+  if (req.method !== "POST") {
+    return jsonResponse({ error: "Method not allowed" }, 405);
+  }
+
+  try {
+    // --- 1. Verify the caller is a logged-in Supabase user ---
+    const authHeader = req.headers.get("Authorization") ?? "";
+    const jwt = authHeader.replace(/^Bearer\s+/i, "");
+
+    if (!jwt) {
+      return jsonResponse({ error: "You need to be logged in to generate questions." }, 401);
     }
-  }catch(e){
-    state.authLoading = false;
-    state.authError = e.message || 'Could not sign up. Try again.';
-  }
-  render();
-}
 
-async function signIn(email, password){
-  state.authLoading = true;
-  state.authError = null;
-  render();
-  try{
-    const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
-    if(error) throw error;
-    state.user = data.session.user;
-    state.authLoading = false;
-    await refreshHistory();
-    goToPostAuthScreen();
-  }catch(e){
-    state.authLoading = false;
-    state.authError = e.message || 'Could not log in. Check your details and try again.';
-  }
-  render();
-}
+    // SUPABASE_URL and SUPABASE_ANON_KEY are auto-provided by the Supabase
+    // Edge Runtime for every function — no need to set them as secrets yourself.
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
 
-async function signOut(){
-  await supabaseClient.auth.signOut();
-  state.user = null;
-  state.history = [];
-  state.screen = 'home';
-  render();
-}
-
-async function requestPasswordReset(email){
-  state.authLoading = true;
-  state.authError = null;
-  state.resetSentMessage = null;
-  render();
-  try{
-    const { error } = await supabaseClient.auth.resetPasswordForEmail(email, {
-      redirectTo: window.location.href.split('#')[0]
+    // Validate the JWT belongs to a real user
+    const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+      global: { headers: { Authorization: `Bearer ${jwt}` } },
     });
-    if(error) throw error;
-    state.resetSentMessage = 'If that email has an account, a reset link is on its way.';
-  }catch(e){
-    state.authError = e.message || 'Could not send reset email. Try again.';
-  }
-  state.authLoading = false;
-  render();
-}
+    const { data: userData, error: userError } = await supabase.auth.getUser();
 
-async function updatePassword(newPassword){
-  state.authLoading = true;
-  state.authError = null;
-  render();
-  try{
-    const { error } = await supabaseClient.auth.updateUser({ password: newPassword });
-    if(error) throw error;
-    state.authLoading = false;
-    state.screen = 'home';
-    render();
-  }catch(e){
-    state.authLoading = false;
-    state.authError = e.message || 'Could not update password. Try again.';
-    render();
-  }
-}
-
-function goToPostAuthScreen(){
-  state.screen = state.redirectAfterAuth || 'setup';
-  state.redirectAfterAuth = null;
-  state.authError = null;
-}
-
-function requireAuthThen(nextScreen){
-  if(state.user){
-    state.screen = nextScreen;
-  } else {
-    state.redirectAfterAuth = nextScreen;
-    state.screen = 'login';
-  }
-}
-// ---------------- edge function call ----------------
-async function generateQuestions(source, count, attachments){
-  // images are sent as data URLs; the edge function needs a vision-capable
-  // model call to actually read them alongside the typed notes/topic.
-  const images = (attachments || [])
-    .filter(a => a.type === 'image')
-    .map(a => a.dataUrl);
-
-  // The edge function requires a real logged-in user's access token — it
-  // rejects the anon key on its own (see supabase/functions/generate-questions).
-  const { data: { session } } = await supabaseClient.auth.getSession();
-  if(!session){
-    throw new Error('You need to be logged in to generate questions.');
-  }
-
-  const response = await fetch(`${SUPABASE_URL}/functions/v1/generate-questions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${session.access_token}`
-    },
-    body: JSON.stringify({ source, count, images })
-  });
-  if(!response.ok){
-    let message = `Edge function error: ${response.status}`;
-    try{
-      const errBody = await response.json();
-      if(errBody && errBody.error) message = errBody.error;
-    }catch(e){ /* non-JSON error body, keep default message */ }
-    throw new Error(message);
-  }
-  const data = await response.json();
-  return data.questions;
-}
-// ---------------- chart ----------------
-function drawChart(answers){
-  const ctx = document.getElementById('chart');
-  if(!ctx) return;
-  const points = answers.map((a,i) => ({
-    x: a.confidence + (Math.random()-0.5)*0.25,
-    y: a.correct ? 1 : 0,
-    label: a.question,
-    correct: a.correct,
-    confidence: a.confidence
-  }));
-  new Chart(ctx, {
-    type: 'scatter',
-    data: {
-      datasets: [{
-        data: points,
-        pointRadius: 8,
-        pointHoverRadius: 10,
-        backgroundColor: points.map(p => {
-          if(!p.correct && p.confidence >= 4) return '#DC9A34';
-          return p.correct ? '#3E8C79' : '#B34A36';
-        }),
-        pointBorderColor: points.map(p => {
-          if(!p.correct && p.confidence >= 4) return '#8A5A16';
-          return p.correct ? '#1F4A40' : '#6E2A1D';
-        }),
-        pointBorderWidth: 2
-      }]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      layout: { padding: 20 },
-      scales: {
-        x: {
-          min: 0.5, max: 5.5,
-          title: { display: true, text: 'Confidence (1\u20135)', color: '#736A55', font:{family:'IBM Plex Mono', size:11} },
-          ticks: { stepSize: 1, color: '#736A55', font:{family:'IBM Plex Mono'} },
-          grid: { color: '#C9BF9E' }
-        },
-        y: {
-          min: -0.5, max: 1.5,
-          ticks: {
-            stepSize: 1,
-            color: '#736A55',
-            font:{family:'IBM Plex Mono'},
-            callback: v => v === 1 ? 'Correct' : v === 0 ? 'Wrong' : ''
-          },
-          grid: { color: '#C9BF9E' }
-        }
-      },
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          bodyFont:{family:'Source Serif 4'},
-          titleFont:{family:'Fraunces'},
-          callbacks: {
-            label: (ctx) => {
-              const p = ctx.raw;
-              return `${p.correct ? 'Correct' : 'Wrong'}, confidence ${p.confidence}/5`;
-            },
-            title: (items) => {
-              const p = items[0].raw;
-              return p.label.length > 60 ? p.label.slice(0,60)+'\u2026' : p.label;
-            }
-          }
-        }
-      }
+    if (userError || !userData?.user) {
+      return jsonResponse({ error: "You need to be logged in to generate questions." }, 401);
     }
-  });
-}
-// ---------------- nav ----------------
-function renderNav(){
-  const authLinks = state.user
-    ? `
-      <div class="nav-user">
-        <span class="nav-email">${state.user.email}</span>
-        <button class="nav-cta" id="nav-logout">Log out</button>
-      </div>
-      <button class="nav-cta" id="nav-open">Open the app</button>
-    `
-    : `
-      <div class="nav-right">
-        <button class="nav-cta ghost-link" id="nav-login">Log in</button>
-        <button class="nav-cta" id="nav-signup">Sign up</button>
-      </div>
-    `;
 
-  return `
-    <nav class="wrap">
-      <button class="mark" id="logo-home">
-        <div class="mark-quad"><span></span><span></span><span></span><span></span></div>
-        <div class="mark-word">Confidence AI</div>
-      </button>
-      ${authLinks}
-    </nav>
-  `;
-}
-
-// ---------------- home screen ----------------
-function renderHome(){
-  return `
-  <header class="hero wrap">
-    <div>
-      <div class="eyebrow">A study tool with one job</div>
-      <h1>Know what you <em>actually</em> know.</h1>
-      <p class="lede">Most quiz apps hand you a score. This one catches the specific moment you felt sure &mdash; and were wrong. That's the blind spot that turns "I studied this" into a bad exam surprise.</p>
-      <div class="cta-row">
-        <button class="btn primary" id="hero-cta">Try it on your notes</button>
-        <a class="btn secondary" href="#how">See how it works</a>
-      </div>
-    </div>
-
-    <div class="quad-card">
-      <div class="quad-label">Every answer, plotted</div>
-      <div class="quad-grid">
-        <div class="q underselling"><div class="qn">Underselling</div><div class="qd">Unsure, but right</div></div>
-        <div class="q locked"><div class="qn">Locked in</div><div class="qd">Sure, and right</div></div>
-        <div class="q fair"><div class="qn">Fair enough</div><div class="qd">Unsure, and wrong</div></div>
-        <div class="q blind"><div class="qn">Blind spot</div><div class="qd">Sure, but wrong</div></div>
-      </div>
-      <div class="axis-x"><span>&larr; less sure</span><span>more sure &rarr;</span></div>
-    </div>
-  </header>
-
-  <section class="rule" id="how">
-    <div class="wrap">
-      <div class="section-head">
-        <div class="eyebrow">How it works</div>
-        <h2>Three steps, no grading required</h2>
-      </div>
-      <div class="steps">
-        <div class="step">
-          <div class="n">01</div>
-          <h3>Paste your notes</h3>
-          <p>Or just name a topic. Questions get generated straight from what you give it &mdash; multiple choice, so scoring is automatic.</p>
-        </div>
-        <div class="step">
-          <div class="n">02</div>
-          <h3>Rate your certainty first</h3>
-          <p>Before you see if you're right, say how sure you are on a scale of 1 to 5. That number is the whole point.</p>
-        </div>
-        <div class="step">
-          <div class="n">03</div>
-          <h3>Read your blind spots</h3>
-          <p>After a handful of questions, every answer lands on a grid. The top-left corner is where confident wrong answers live.</p>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <section class="rule">
-    <div class="wrap">
-      <div class="callout">
-        <p>A test score tells you what you missed. It doesn't tell you which of your "I've got this" moments were lies.</p>
-        <p>Confidence AI is built around that gap &mdash; the answers you got wrong while feeling ready are the ones most likely to repeat themselves on exam day.</p>
-      </div>
-    </div>
-  </section>
-
-  <footer class="wrap">
-    <span>Confidence AI</span>
-    <span>Built for a hackathon, works on real notes</span>
-  </footer>
-  `;
-}
-// ---------------- auth screens ----------------
-function renderLogin(){
-  const msg = state.signupConfirmMessage;
-  state.signupConfirmMessage = null;
-  return `
-    <h1>Log in</h1>
-    <div class="app-sub">Log in to save quizzes to your account and pick up your blind-spot history anywhere.</div>
-    <div class="card">
-      <form id="login-form">
-        <div class="auth-field">
-          <label for="login-email">Email</label>
-          <input type="email" id="login-email" autocomplete="email" required>
-        </div>
-        <div class="auth-field">
-          <label for="login-password">Password</label>
-          <input type="password" id="login-password" autocomplete="current-password" required>
-        </div>
-        ${msg ? `<div class="success-msg">${msg}</div>` : ''}
-        ${state.authError ? `<div class="err">${state.authError}</div>` : ''}
-        <div class="auth-submit-row">
-          <button type="submit" id="login-submit" ${state.authLoading ? 'disabled' : ''}>${state.authLoading ? 'Logging in\u2026' : 'Log in'}</button>
-        </div>
-      </form>
-      <div class="auth-switch">
-        <button id="go-forgot">Forgot password?</button>
-      </div>
-      <div class="auth-switch">
-        Don't have an account? <button id="go-signup">Sign up</button>
-      </div>
-    </div>
-  `;
-}
-
-function renderForgotPassword(){
-  const msg = state.resetSentMessage;
-  return `
-    <h1>Reset your password</h1>
-    <div class="app-sub">Enter the email on your account and we'll send you a link to set a new password.</div>
-    <div class="card">
-      <form id="forgot-form">
-        <div class="auth-field">
-          <label for="forgot-email">Email</label>
-          <input type="email" id="forgot-email" autocomplete="email" required>
-        </div>
-        ${msg ? `<div class="success-msg">${msg}</div>` : ''}
-        ${state.authError ? `<div class="err">${state.authError}</div>` : ''}
-        <div class="auth-submit-row">
-          <button type="submit" id="forgot-submit" ${state.authLoading ? 'disabled' : ''}>${state.authLoading ? 'Sending\u2026' : 'Send reset link'}</button>
-        </div>
-      </form>
-      <div class="auth-switch">
-        <button id="go-login-from-forgot">Back to log in</button>
-      </div>
-    </div>
-  `;
-}
-
-function renderUpdatePassword(){
-  return `
-    <h1>Choose a new password</h1>
-    <div class="app-sub">You followed a password reset link. Set a new password below to finish.</div>
-    <div class="card">
-      <form id="update-password-form">
-        <div class="auth-field">
-          <label for="update-password">New password</label>
-          <input type="password" id="update-password" autocomplete="new-password" minlength="6" required>
-        </div>
-        <div class="auth-field">
-          <label for="update-password-confirm">Confirm new password</label>
-          <input type="password" id="update-password-confirm" autocomplete="new-password" minlength="6" required>
-        </div>
-        ${state.authError ? `<div class="err">${state.authError}</div>` : ''}
-        <div class="auth-submit-row">
-          <button type="submit" id="update-password-submit" ${state.authLoading ? 'disabled' : ''}>${state.authLoading ? 'Saving\u2026' : 'Save new password'}</button>
-        </div>
-      </form>
-    </div>
-  `;
-}
-
-function renderSignup(){
-  return `
-    <h1>Create an account</h1>
-    <div class="app-sub">Sign up to save your quizzes and revisit your blind spots later.</div>
-    <div class="card">
-      <form id="signup-form">
-        <div class="auth-field">
-          <label for="signup-email">Email</label>
-          <input type="email" id="signup-email" autocomplete="email" required>
-        </div>
-        <div class="auth-field">
-          <label for="signup-password">Password</label>
-          <input type="password" id="signup-password" autocomplete="new-password" minlength="6" required>
-        </div>
-        <div class="auth-field">
-          <label for="signup-password-confirm">Confirm password</label>
-          <input type="password" id="signup-password-confirm" autocomplete="new-password" minlength="6" required>
-        </div>
-        ${state.authError ? `<div class="err">${state.authError}</div>` : ''}
-        <div class="auth-submit-row">
-          <button type="submit" id="signup-submit" ${state.authLoading ? 'disabled' : ''}>${state.authLoading ? 'Creating account\u2026' : 'Sign up'}</button>
-        </div>
-      </form>
-      <div class="auth-switch">
-        Already have an account? <button id="go-login">Log in</button>
-      </div>
-    </div>
-  `;
-}
-// ---------------- app shell ----------------
-function renderAppShell(inner){
-  return `<div class="app-wrap">${inner}</div>`;
-}
-
-function renderSetup(){
-  return `
-    <h1>Find your blind spots</h1>
-    <div class="app-sub">Paste your notes, name a topic, or add a photo of your notes &mdash; you'll rate how sure you are before each answer is revealed, that's what catches the moments you feel ready but aren't.</div>
-    <div class="card">
-      <label for="source">Notes or topic</label>
-      <textarea id="source" placeholder="Paste study notes, or type a topic like &quot;the French Revolution&quot; or &quot;React hooks&quot;">${state.source}</textarea>
-
-      <div class="attach-row">
-        <label class="attach-btn" for="camera-input">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3l1.6-2.2h6.8L17 8h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"></path><circle cx="12" cy="14" r="3.4"></circle></svg>
-          Take a photo
-        </label>
-        <input type="file" id="camera-input" accept="image/*" capture="environment" hidden>
-
-        <label class="attach-btn" for="file-input">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"></path><path d="M14 3v5h5"></path></svg>
-          Scan a document
-        </label>
-        <input type="file" id="file-input" accept="image/*,application/pdf" multiple hidden>
-      </div>
-      <div class="attach-hint">Photos and scans get read alongside your notes to build questions.</div>
-
-      ${state.attachments.length ? `
-        <div class="attach-previews">
-          ${state.attachments.map(a => `
-            <div class="attach-thumb ${a.type === 'image' ? '' : 'file'}">
-              ${a.type === 'image'
-                ? `<img src="${a.dataUrl}" alt="${a.name}">`
-                : `<div>&#128196;</div><div class="fname">${a.name}</div>`
-              }
-              <button class="attach-remove" data-remove="${a.id}" aria-label="Remove attachment">&times;</button>
-            </div>
-          `).join('')}
-        </div>
-      ` : ''}
-
-      <div class="row">
-        <div>
-          <label for="count">Questions</label>
-          <select id="count">
-            ${[4,6,8,10].map(n => `<option value="${n}" ${n===state.count?'selected':''}>${n}</option>`).join('')}
-          </select>
-        </div>
-      </div>
-      ${state.error ? `<div class="err">${state.error}</div>` : ''}
-      <div class="actions">
-        <button id="start-btn">Generate questions</button>
-      </div>
-    </div>
-  `;
-}
-
-function renderLoading(){
-  const hasPhotos = state.attachments.some(a => a.type === 'image');
-  const msg = hasPhotos ? 'Reading your photos and notes\u2026' : 'Writing questions from what you gave me\u2026';
-  return `
-    <h1>Building your quiz</h1>
-    <div class="card">
-      <div class="loading">
-        <div class="loading-quad"><span></span><span></span><span></span><span></span></div>
-        <div class="loading-text">${msg}</div>
-      </div>
-    </div>
-  `;
-}
-function renderQuiz(){
-  const q = state.questions[state.current];
-  const total = state.questions.length;
-  return `
-    <div class="progress">Question ${state.current + 1} / ${total}</div>
-    <div class="card">
-      <div class="qtext">${q.question}</div>
-      <label>Pick an answer</label>
-      ${q.options.map((opt, i) => {
-        let cls = 'opt';
-        if(state.revealed){
-          if(i === q.correctIndex) cls += ' correct';
-          else if(i === state.selectedOpt) cls += ' wrong';
-        } else if(i === state.selectedOpt){
-          cls += ' selected';
-        }
-        return `<button class="${cls}" data-opt="${i}" ${state.revealed?'disabled':''}>${opt}</button>`;
-      }).join('')}
-
-      <label style="margin-top:22px;">How sure are you?</label>
-      <div class="conf-scale">
-        ${[1,2,3,4,5].map(n => `<div class="conf-btn ${state.selectedConf===n?'selected':''}" data-conf="${n}">${n}</div>`).join('')}
-      </div>
-      <div class="conf-labels"><span>Just guessing</span><span>Dead certain</span></div>
-
-      ${state.revealed ? renderVerdict(q) : ''}
-
-      <div class="actions">
-        ${!state.revealed
-          ? `<button id="reveal-btn" ${(state.selectedOpt===null||state.selectedConf===null)?'disabled':''}>Reveal answer</button>`
-          : `<button id="next-btn">${state.current === total-1 ? 'See results' : 'Next question'}</button>`
-        }
-      </div>
-    </div>
-  `;
-}
-
-function renderVerdict(q){
-  const correct = state.selectedOpt === q.correctIndex;
-  const blindspot = !correct && state.selectedConf >= 4;
-  let cls = correct ? 'verdict correct' : 'verdict wrong';
-  let head = correct ? 'Correct.' : 'Not quite.';
-  if(blindspot) { cls = 'verdict blindspot'; head = 'Confidently wrong \u2014 that\u2019s a blind spot.'; }
-  return `<div class="${cls}"><div>${head}</div><div class="explain">${q.explanation}</div></div>`;
-}
-function renderResults(answers, archived){
-  const total = answers.length;
-  const correctCount = answers.filter(a => a.correct).length;
-  const blindspots = answers.filter(a => !a.correct && a.confidence >= 4);
-  const avgConf = (answers.reduce((s,a)=>s+a.confidence,0)/total).toFixed(1);
-  return `
-    <h1>${archived ? 'Past session' : 'Your calibration'}</h1>
-    <div class="app-sub">Confidence on the horizontal axis, correctness on the vertical. Top-left is where exams go wrong.</div>
-    <div class="card">
-      <div class="stat-row">
-        <div class="stat"><div class="num">${correctCount}/${total}</div><div class="lbl">Correct</div></div>
-        <div class="stat"><div class="num">${avgConf}</div><div class="lbl">Avg confidence</div></div>
-        <div class="stat"><div class="num" style="color:var(--amber-dark)">${blindspots.length}</div><div class="lbl">Blind spots</div></div>
-      </div>
-      <div class="grid-wrap">
-        <canvas id="chart" height="360" role="img" aria-label="Scatter plot of confidence versus correctness for each answered question"></canvas>
-      </div>
-      ${blindspots.length ? `
-        <div class="flag-list">
-          <label>Where you were sure &mdash; and wrong</label>
-          ${blindspots.map(b => `<div class="flag-item"><b>${b.question}</b>You said ${b.confidence}/5 sure. Correct answer: ${b.correctText}</div>`).join('')}
-        </div>
-      ` : `<div class="flag-item" style="border-color:var(--teal-dark)">No confident-wrong answers this round. Your confidence tracked your knowledge well.</div>`}
-      <div class="actions">
-        ${archived
-          ? `<button class="ghost" id="back-home-btn">Back to home</button>`
-          : `<button class="ghost" id="restart-btn">Start over</button>`
-        }
-      </div>
-    </div>
-  `;
-}
-
-function renderSessionView(){
-  const s = getViewingSession();
-  if(!s) return `<h1>Session not found</h1>`;
-  return renderResults(s.answers, true);
-}
-// Screens that belong to the "ask questions" flow — generating and taking a
-// quiz requires a logged-in user. Enforced here, not just at the buttons that
-// lead here, so there's a single place this rule can't be bypassed from.
-const QUESTION_FLOW_SCREENS = ['setup', 'loading', 'quiz', 'results'];
-
-function render(){
-  const root = document.getElementById('root');
-
-  if(QUESTION_FLOW_SCREENS.includes(state.screen) && !state.user){
-    state.redirectAfterAuth = state.screen;
-    state.screen = 'login';
-  }
-
-  const navHtml = renderNav();
-
-  if(state.screen === 'home') root.innerHTML = navHtml + renderHome();
-  else if(state.screen === 'login') root.innerHTML = navHtml + renderAppShell(renderLogin());
-  else if(state.screen === 'signup') root.innerHTML = navHtml + renderAppShell(renderSignup());
-  else if(state.screen === 'forgot') root.innerHTML = navHtml + renderAppShell(renderForgotPassword());
-  else if(state.screen === 'update-password') root.innerHTML = navHtml + renderAppShell(renderUpdatePassword());
-  else if(state.screen === 'setup') root.innerHTML = navHtml + renderAppShell(renderSetup());
-  else if(state.screen === 'loading') root.innerHTML = navHtml + renderAppShell(renderLoading());
-  else if(state.screen === 'quiz') root.innerHTML = navHtml + renderAppShell(renderQuiz());
-  else if(state.screen === 'results') root.innerHTML = navHtml + renderAppShell(renderResults(state.answers, false));
-  else if(state.screen === 'session') root.innerHTML = navHtml + renderAppShell(renderSessionView());
-
-  document.body.classList.toggle('is-home', state.screen === 'home');
-  if(state.screen === 'home') state.sidebarOpen = false;
-
-  attachHandlers();
-  renderSidebar();
-  if(state.screen === 'results' || state.screen === 'session') drawChart(state.screen === 'session' ? getViewingSession().answers : state.answers);
-}
-// ---------------- handlers ----------------
-function attachHandlers(){
-  const logoHome = document.getElementById('logo-home');
-  if(logoHome) logoHome.onclick = () => { state.screen = 'home'; render(); };
-
-  const navOpen = document.getElementById('nav-open');
-  if(navOpen) navOpen.onclick = () => { requireAuthThen('setup'); render(); };
-
-  const navLogin = document.getElementById('nav-login');
-  if(navLogin) navLogin.onclick = () => { state.authError = null; state.screen = 'login'; render(); };
-
-  const navSignup = document.getElementById('nav-signup');
-  if(navSignup) navSignup.onclick = () => { state.authError = null; state.screen = 'signup'; render(); };
-
-  const navLogout = document.getElementById('nav-logout');
-  if(navLogout) navLogout.onclick = () => { signOut(); };
-
-  const heroCta = document.getElementById('hero-cta');
-  if(heroCta) heroCta.onclick = () => { requireAuthThen('setup'); render(); };
-
-  // ---- auth forms ----
-  const loginForm = document.getElementById('login-form');
-  if(loginForm) loginForm.onsubmit = (e) => {
-    e.preventDefault();
-    const email = document.getElementById('login-email').value.trim();
-    const password = document.getElementById('login-password').value;
-    signIn(email, password);
-  };
-
-  const signupForm = document.getElementById('signup-form');
-  if(signupForm) signupForm.onsubmit = (e) => {
-    e.preventDefault();
-    const email = document.getElementById('signup-email').value.trim();
-    const password = document.getElementById('signup-password').value;
-    const confirm = document.getElementById('signup-password-confirm').value;
-    if(password !== confirm){
-      state.authError = "Passwords don't match.";
-      render();
-      return;
+    // --- 2. Parse and validate the request body ---
+    const body = await req.json().catch(() => null);
+    if (!body) {
+      return jsonResponse({ error: "Invalid JSON body." }, 400);
     }
-    signUp(email, password);
-  };
 
-  const goSignup = document.getElementById('go-signup');
-  if(goSignup) goSignup.onclick = () => { state.authError = null; state.screen = 'signup'; render(); };
+    const source: string = typeof body.source === "string" ? body.source.slice(0, 4000) : "";
+    const count: number = Number.isFinite(body.count) ? Math.min(Math.max(body.count, 1), 10) : 6;
+    const images: string[] = Array.isArray(body.images) ? body.images.slice(0, 2) : [];
 
-  const goLogin = document.getElementById('go-login');
-  if(goLogin) goLogin.onclick = () => { state.authError = null; state.screen = 'login'; render(); };
-
-  const goForgot = document.getElementById('go-forgot');
-  if(goForgot) goForgot.onclick = () => { state.authError = null; state.resetSentMessage = null; state.screen = 'forgot'; render(); };
-
-  const goLoginFromForgot = document.getElementById('go-login-from-forgot');
-  if(goLoginFromForgot) goLoginFromForgot.onclick = () => { state.authError = null; state.screen = 'login'; render(); };
-
-  const forgotForm = document.getElementById('forgot-form');
-  if(forgotForm) forgotForm.onsubmit = (e) => {
-    e.preventDefault();
-    const email = document.getElementById('forgot-email').value.trim();
-    requestPasswordReset(email);
-  };
-
-  const updatePasswordForm = document.getElementById('update-password-form');
-  if(updatePasswordForm) updatePasswordForm.onsubmit = (e) => {
-    e.preventDefault();
-    const password = document.getElementById('update-password').value;
-    const confirm = document.getElementById('update-password-confirm').value;
-    if(password !== confirm){
-      state.authError = "Passwords don't match.";
-      render();
-      return;
+    if (!source && images.length === 0) {
+      return jsonResponse({ error: "Please provide some notes, a topic, or an image." }, 400);
     }
-    updatePassword(password);
-  };
 
-  // ---- quiz setup ----
-  const startBtn = document.getElementById('start-btn');
-  if(startBtn) startBtn.onclick = async () => {
-    state.source = document.getElementById('source').value.trim();
-    state.count = parseInt(document.getElementById('count').value, 10);
-    if(!state.source && state.attachments.length === 0){
-      state.error = 'Give me something to work with \u2014 notes, a topic, or a photo of your notes.';
-      render();
-      return;
+    // API key lives server-side only — set via `supabase secrets set OPENROUTER_API_KEY=...`
+    const apiKey = Deno.env.get("OPENROUTER_API_KEY");
+    if (!apiKey) {
+      console.error("OPENROUTER_API_KEY secret is not set.");
+      return jsonResponse({ error: "Server is not configured. Please contact the site owner." }, 500);
     }
-    state.error = null;
-    state.screen = 'loading';
-    render();
-    try{
-      const qs = await generateQuestions(state.source, state.count, state.attachments);
-      state.questions = qs;
-      state.current = 0;
-      state.answers = [];
-      state.selectedOpt = null;
-      state.selectedConf = null;
-      state.revealed = false;
-      state.screen = 'quiz';
-    }catch(e){
-      state.screen = 'setup';
-      state.error = e.message || 'Something went wrong generating questions. Try again.';
+
+    // --- 3. Build the OpenRouter chat completion request ---
+    const instructions = `Generate exactly ${count} multiple-choice questions from the study material below (notes/topic text and/or attached images).
+
+Rules:
+- Exactly 4 options per question, exactly 1 correct.
+- Vary the position of the correct answer.
+- Clear, unambiguous, answerable from the material. No trick questions.
+
+Respond with ONLY valid JSON, no markdown fences, no commentary:
+{"questions":[{"question":"string","options":["string","string","string","string"],"correctIndex":0}]}`;
+
+    const contentBlocks: Record<string, unknown>[] = [];
+
+    if (source) {
+      contentBlocks.push({ type: "text", text: `Study material:\n${source}` });
     }
-    render();
-  };
 
-  const cameraInput = document.getElementById('camera-input');
-  if(cameraInput) cameraInput.onchange = (e) => { handleFiles(e.target.files); };
-
-  const fileInput = document.getElementById('file-input');
-  if(fileInput) fileInput.onchange = (e) => { handleFiles(e.target.files); };
-
-  document.querySelectorAll('[data-remove]').forEach(btn => {
-    btn.onclick = () => {
-      state.attachments = state.attachments.filter(a => a.id !== btn.dataset.remove);
-      render();
-    };
-  });
-
-  document.querySelectorAll('.opt').forEach(btn => {
-    btn.onclick = () => { if(!state.revealed){ state.selectedOpt = parseInt(btn.dataset.opt,10); render(); } };
-  });
-  document.querySelectorAll('.conf-btn').forEach(btn => {
-    btn.onclick = () => { if(!state.revealed){ state.selectedConf = parseInt(btn.dataset.conf,10); render(); } };
-  });
-
-  const revealBtn = document.getElementById('reveal-btn');
-  if(revealBtn) revealBtn.onclick = () => {
-    const q = state.questions[state.current];
-    state.revealed = true;
-    state.answers.push({
-      question: q.question,
-      confidence: state.selectedConf,
-      correct: state.selectedOpt === q.correctIndex,
-      correctText: q.options[q.correctIndex]
-    });
-    render();
-  };
-
-  const nextBtn = document.getElementById('next-btn');
-  if(nextBtn) nextBtn.onclick = async () => {
-    if(state.current === state.questions.length - 1){
-      state.screen = 'results';
-      render();
-      await saveSession(); // persists to Supabase, then refreshes the sidebar list
-      renderSidebar();
-    } else {
-      state.current += 1;
-      state.selectedOpt = null;
-      state.selectedConf = null;
-      state.revealed = false;
-      render();
-    }
-  };
-
-  const backHomeBtn = document.getElementById('back-home-btn');
-  if(backHomeBtn) backHomeBtn.onclick = () => { state.screen = 'home'; render(); };
-
-  const restartBtn = document.getElementById('restart-btn');
-  if(restartBtn) restartBtn.onclick = () => {
-    Object.assign(state, {
-      source:'', count:6, attachments:[], questions:[], current:0,
-      answers:[], selectedOpt:null, selectedConf:null, revealed:false, error:null
-    });
-    requireAuthThen('setup');
-    render();
-  };
-}
-
-// ---------------- attachments (camera / scan) ----------------
-function handleFiles(fileList){
-  // preserve in-progress typing before we re-render for each file
-  const srcEl = document.getElementById('source');
-  if(srcEl) state.source = srcEl.value;
-  const countEl = document.getElementById('count');
-  if(countEl) state.count = parseInt(countEl.value, 10);
-
-  const files = Array.from(fileList || []).slice(0, MAX_ATTACHMENTS - state.attachments.length);
-  if(files.length === 0) return;
-
-  files.forEach(file => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      state.attachments.push({
-        id: 'a' + Date.now() + Math.random().toString(36).slice(2, 7),
-        name: file.name,
-        type: file.type.startsWith('image/') ? 'image' : 'file',
-        dataUrl: reader.result
+    for (const dataUrl of images) {
+      const match = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/.exec(dataUrl);
+      if (!match) continue; // skip anything that isn't a valid data URL
+      contentBlocks.push({
+        type: "image_url",
+        image_url: { url: dataUrl },
       });
-      render();
-    };
-    reader.readAsDataURL(file);
-  });
-}
-// ---------------- entry point ----------------
-const MIN_SPLASH_MS = 700;
+    }
 
-function hideSplash(){
-  const splash = document.getElementById('splash');
-  const root = document.getElementById('root');
-  if(splash) splash.classList.add('hide');
-  if(root) root.classList.add('ready');
-}
+    if (contentBlocks.length === 0) {
+      return jsonResponse({ error: "No usable study material was provided." }, 400);
+    }
 
-async function init(){
-  const started = Date.now();
+    const openRouterResponse = await fetch(OPENROUTER_API_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}`,
+        // Optional but recommended by OpenRouter for attribution/rankings
+        "HTTP-Referer": supabaseUrl,
+        "X-Title": "Confidence AI",
+      },
+      body: JSON.stringify({
+        model: OPENROUTER_MODEL,
+        max_tokens: Math.min(1000, 120 + count * 70),
+        messages: [
+          { role: "system", content: instructions },
+          { role: "user", content: contentBlocks },
+        ],
+      }),
+    });
 
-  await initAuth();  // resolves state.user (and history, if logged in) from any existing session
-  render();
+    if (!openRouterResponse.ok) {
+      const errText = await openRouterResponse.text().catch(() => "");
+      console.error("OpenRouter API error:", openRouterResponse.status, errText);
+      if (openRouterResponse.status === 401) {
+        return jsonResponse({ error: "Server's API key was rejected. Contact the site owner." }, 401);
+      }
+      if (openRouterResponse.status === 402) {
+        return jsonResponse(
+          { error: "The site has run out of AI credits. Please contact the site owner to top up." },
+          402,
+        );
+      }
+      if (openRouterResponse.status === 429) {
+        return jsonResponse({ error: "Too many requests right now. Please try again in a moment." }, 429);
+      }
+      return jsonResponse({ error: "Failed to generate questions. Please try again." }, 502);
+    }
 
-  // Keep the splash up for a minimum stretch so it doesn't just flicker on
-  // fast connections, but never block longer than necessary.
-  const elapsed = Date.now() - started;
-  setTimeout(hideSplash, Math.max(0, MIN_SPLASH_MS - elapsed));
-}
+    const openRouterData = await openRouterResponse.json();
+    const rawText: string = openRouterData?.choices?.[0]?.message?.content ?? "";
 
-// Wait for the full page load (fonts, Chart.js, etc.) before kicking off
-// auth resolution and the first real render.
-window.addEventListener('load', init);
+    // Strip accidental markdown fences just in case
+    const cleaned = rawText.replace(/^```json\s*|^```\s*|```\s*$/gm, "").trim();
 
-</script>
-</body>
-</html>
+    let parsed: { questions?: unknown };
+    try {
+      parsed = JSON.parse(cleaned);
+    } catch (_e) {
+      console.error("Failed to parse OpenRouter response:", rawText);
+      return jsonResponse({ error: "Could not parse generated questions. Please try again." }, 502);
+    }
+
+    const questions = Array.isArray(parsed.questions) ? parsed.questions : [];
+
+    // --- 4. Validate the shape before returning ---
+    const validQuestions = questions.filter((q: unknown) => {
+      const question = q as { question?: unknown; options?: unknown; correctIndex?: unknown };
+      return (
+        typeof question.question === "string" &&
+        Array.isArray(question.options) &&
+        question.options.length === 4 &&
+        question.options.every((o: unknown) => typeof o === "string") &&
+        typeof question.correctIndex === "number" &&
+        question.correctIndex >= 0 &&
+        question.correctIndex <= 3
+      );
+    });
+
+    if (validQuestions.length === 0) {
+      return jsonResponse({ error: "No valid questions were generated. Please try again." }, 502);
+    }
+
+    return jsonResponse({ questions: validQuestions });
+  } catch (err) {
+    console.error("Unexpected error:", err);
+    return jsonResponse({ error: "Something went wrong generating questions." }, 500);
+  }
+});
