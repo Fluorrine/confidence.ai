@@ -1,207 +1,35 @@
-// supabase/functions/generate-questions/index.ts
-//
-// Deploy with:
-//   supabase functions deploy generate-questions
-//
-// Expects the frontend to POST:
-//   {
-//     source: string,        // notes or a topic, e.g. "the French Revolution" (max 2500 chars, longer is truncated)
-//     count: number,         // how many questions to generate (1–8, capped server-side to limit credit use)
-//     images: string[]       // optional array of data URLs (max 1 kept, extras are dropped)
-//   }
-//
-// Requires a logged-in Supabase user — the request must include
-// "Authorization: Bearer <user access token>" (the frontend already does this).
-//
-// The OpenRouter API key is NOT sent by the client. It's read from a
-// server-side secret, set once with:
-//   supabase secrets set OPENROUTER_API_KEY=sk-or-v1-...
-// This means visitors never see the key, but all usage bills to your account.
-//
-// Optionally set OPENROUTER_MODEL to pick a different model. Defaults to
-// a Claude model via OpenRouter. Vision-capable models are required if
-// you want image attachments to work.
-//
-// Returns:
-//   { questions: [ { question: string, options: string[], correctIndex: number }, ... ] }
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Confidence AI</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23DC9A34'%3E%3Cpath d='M12 0c.9 3.6 1.9 6.1 3.4 7.6C16.9 9.1 19.4 10.1 23 11c-3.6.9-6.1 1.9-7.6 3.4C13.9 15.9 12.9 18.4 12 22c-.9-3.6-1.9-6.1-3.4-7.6C7.1 12.9 4.6 11.9 1 11c3.6-.9 6.1-1.9 7.6-3.4C9.1 6.1 10.1 3.6 11 0c.3 0 .7 0 1 0z'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,340;0,9..144,440;0,9..144,560;1,9..144,440&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="splash">
+  <div class="splash-mark">
+    <div class="splash-quad"><span></span><span></span><span></span><span></span></div>
+    <div class="splash-word">Confidence AI</div>
+  </div>
+  <div class="splash-tag">Loading&hellip;</div>
+</div>
 
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+<div id="root"></div>
 
-const OPENROUTER_MODEL = Deno.env.get("OPENROUTER_MODEL") || "anthropic/claude-sonnet-4";
-const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
+<button id="sidebar-toggle" aria-label="Toggle history">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"></rect><line x1="9" y1="4" x2="9" y2="20"></line></svg>
+</button>
+<div id="history-overlay"></div>
+<div id="history-panel"></div>
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
-
-function jsonResponse(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
-  });
-}
-
-Deno.serve(async (req: Request) => {
-  // Handle CORS preflight
-  if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders });
-  }
-
-  if (req.method !== "POST") {
-    return jsonResponse({ error: "Method not allowed" }, 405);
-  }
-
-  try {
-    // --- 1. Verify the caller is a logged-in Supabase user ---
-    const authHeader = req.headers.get("Authorization") ?? "";
-    const jwt = authHeader.replace(/^Bearer\s+/i, "");
-
-    if (!jwt) {
-      return jsonResponse({ error: "You need to be logged in to generate questions." }, 401);
-    }
-
-    // SUPABASE_URL and SUPABASE_ANON_KEY are auto-provided by the Supabase
-    // Edge Runtime for every function — no need to set them as secrets yourself.
-    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-    const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
-
-    // Validate the JWT belongs to a real user
-    const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-      global: { headers: { Authorization: `Bearer ${jwt}` } },
-    });
-    const { data: userData, error: userError } = await supabase.auth.getUser();
-
-    if (userError || !userData?.user) {
-      return jsonResponse({ error: "You need to be logged in to generate questions." }, 401);
-    }
-
-    // --- 2. Parse and validate the request body ---
-    const body = await req.json().catch(() => null);
-    if (!body) {
-      return jsonResponse({ error: "Invalid JSON body." }, 400);
-    }
-
-    const source: string = typeof body.source === "string" ? body.source.slice(0, 2500) : "";
-    const count: number = Number.isFinite(body.count) ? Math.min(Math.max(body.count, 1), 8) : 6;
-    const images: string[] = Array.isArray(body.images) ? body.images.slice(0, 1) : [];
-
-    if (!source && images.length === 0) {
-      return jsonResponse({ error: "Please provide some notes, a topic, or an image." }, 400);
-    }
-
-    // API key lives server-side only — set via `supabase secrets set OPENROUTER_API_KEY=...`
-    const apiKey = Deno.env.get("OPENROUTER_API_KEY");
-    if (!apiKey) {
-      console.error("OPENROUTER_API_KEY secret is not set.");
-      return jsonResponse({ error: "Server is not configured. Please contact the site owner." }, 500);
-    }
-
-    // --- 3. Build the OpenRouter chat completion request ---
-    const instructions = `Generate exactly ${count} multiple-choice questions from the study material below (notes/topic text and/or attached images).
-
-Rules:
-- Exactly 4 options per question, exactly 1 correct.
-- Vary the position of the correct answer.
-- Clear, unambiguous, answerable from the material. No trick questions.
-
-Respond with ONLY valid JSON, no markdown fences, no commentary:
-{"questions":[{"question":"string","options":["string","string","string","string"],"correctIndex":0}]}`;
-
-    const contentBlocks: Record<string, unknown>[] = [];
-
-    if (source) {
-      contentBlocks.push({ type: "text", text: `Study material:\n${source}` });
-    }
-
-    for (const dataUrl of images) {
-      const match = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/.exec(dataUrl);
-      if (!match) continue; // skip anything that isn't a valid data URL
-      contentBlocks.push({
-        type: "image_url",
-        image_url: { url: dataUrl },
-      });
-    }
-
-    if (contentBlocks.length === 0) {
-      return jsonResponse({ error: "No usable study material was provided." }, 400);
-    }
-
-    const openRouterResponse = await fetch(OPENROUTER_API_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey}`,
-        // Optional but recommended by OpenRouter for attribution/rankings
-        "HTTP-Referer": supabaseUrl,
-        "X-Title": "Confidence AI",
-      },
-      body: JSON.stringify({
-        model: OPENROUTER_MODEL,
-        max_tokens: Math.min(800, 100 + count * 60),
-        messages: [
-          { role: "system", content: instructions },
-          { role: "user", content: contentBlocks },
-        ],
-      }),
-    });
-
-    if (!openRouterResponse.ok) {
-      const errText = await openRouterResponse.text().catch(() => "");
-      console.error("OpenRouter API error:", openRouterResponse.status, errText);
-      if (openRouterResponse.status === 401) {
-        return jsonResponse({ error: "Server's API key was rejected. Contact the site owner." }, 401);
-      }
-      if (openRouterResponse.status === 402) {
-        return jsonResponse(
-          { error: "The site has run out of AI credits. Please contact the site owner to top up." },
-          402,
-        );
-      }
-      if (openRouterResponse.status === 429) {
-        return jsonResponse({ error: "Too many requests right now. Please try again in a moment." }, 429);
-      }
-      return jsonResponse({ error: "Failed to generate questions. Please try again." }, 502);
-    }
-
-    const openRouterData = await openRouterResponse.json();
-    const rawText: string = openRouterData?.choices?.[0]?.message?.content ?? "";
-
-    // Strip accidental markdown fences just in case
-    const cleaned = rawText.replace(/^```json\s*|^```\s*|```\s*$/gm, "").trim();
-
-    let parsed: { questions?: unknown };
-    try {
-      parsed = JSON.parse(cleaned);
-    } catch (_e) {
-      console.error("Failed to parse OpenRouter response:", rawText);
-      return jsonResponse({ error: "Could not parse generated questions. Please try again." }, 502);
-    }
-
-    const questions = Array.isArray(parsed.questions) ? parsed.questions : [];
-
-    // --- 4. Validate the shape before returning ---
-    const validQuestions = questions.filter((q: unknown) => {
-      const question = q as { question?: unknown; options?: unknown; correctIndex?: unknown };
-      return (
-        typeof question.question === "string" &&
-        Array.isArray(question.options) &&
-        question.options.length === 4 &&
-        question.options.every((o: unknown) => typeof o === "string") &&
-        typeof question.correctIndex === "number" &&
-        question.correctIndex >= 0 &&
-        question.correctIndex <= 3
-      );
-    });
-
-    if (validQuestions.length === 0) {
-      return jsonResponse({ error: "No valid questions were generated. Please try again." }, 502);
-    }
-
-    return jsonResponse({ questions: validQuestions });
-  } catch (err) {
-    console.error("Unexpected error:", err);
-    return jsonResponse({ error: "Something went wrong generating questions." }, 500);
-  }
-});
+<!-- third-party libraries -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
